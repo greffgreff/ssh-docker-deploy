@@ -1,5 +1,5 @@
 name: SSH Docker Deploy
-description: Deploy a docker container through SSH
+description: Deploy a Docker container through SSH
 author: 'Your Name or Company'
 
 inputs:
@@ -31,13 +31,21 @@ inputs:
     description: 'Port to run the container on the remote server'
     required: false
     default: '8080'
+  trigger_event:
+    description: 'Whether to trigger a deploy event'
+    required: false
+    default: 'false'
+  event_name:
+    description: 'Custom event name to trigger, default is "docker-deploy"'
+    required: false
+    default: 'docker-deploy'
 
 runs:
   using: 'composite'
   steps:
     - name: Validate Image Format
       run: |
-        IMAGE="${{ github.event.client_payload.target }}"
+        IMAGE="${{ inputs.target }}"
         if [[ ! $IMAGE =~ ^[a-zA-Z0-9\.\-]+\/[a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+:[a-zA-Z0-9_\-]+$ ]]; then
           echo "Error: Invalid Docker image format. The image should be in the format 'registry/owner/repository:tag'."
           exit 1
@@ -56,15 +64,6 @@ runs:
         chmod 600 ~/.ssh/id_rsa
         ssh-keyscan -H "${{ inputs.ssh_host }}" >> ~/.ssh/known_hosts
 
-    - name: Validate Image Format
-      run: |
-        IMAGE="${{ inputs.target }}"
-        if [[ ! $IMAGE =~ ^ghcr\.io\/[a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+:[a-zA-Z0-9_\-]+$ ]]; then
-          echo "Error: Invalid image format. The image should be in the format 'ghcr.io/owner/repository:tag'."
-          exit 1
-        fi
-        echo "Target image to deploy: $IMAGE"
-
     - name: Check Docker installation on remote server
       run: |
         ssh -t ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} << EOF
@@ -81,7 +80,7 @@ runs:
       run: |
         ssh -t ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} << EOF
           echo "Logging in to container registry..."
-          echo ${{ inputs.docker_token }} | docker login ghcr.io -u ${{ inputs.docker_username }} --password-stdin
+          echo ${{ inputs.docker_token }} | docker login ${{ inputs.target | cut -d '/' -f 1 }} -u ${{ inputs.docker_username }} --password-stdin
         EOF
 
     - name: Pull Docker image
@@ -110,3 +109,11 @@ runs:
           echo "Running new container ${{ inputs.container_name }} on port ${{ inputs.container_port }}..."
           docker run -d -p 80:${{ inputs.container_port }} --name ${{ inputs.container_name }} ${{ inputs.target }}
         EOF
+
+    - name: Trigger Deploy Workflow (Optional)
+      if: ${{ inputs.trigger_event == 'true' }}
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        event-type: ${{ inputs.event_name }}
+        client-payload: '{"target": "${{ inputs.target }}"}'
