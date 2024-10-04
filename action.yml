@@ -1,0 +1,112 @@
+name: SSH Docker Deploy
+description: Deploy a docker container through SSH
+author: 'Your Name or Company'
+
+inputs:
+  target:
+    description: 'Docker image to deploy (e.g., ghcr.io/owner/repository:tag)'
+    required: true
+  ssh_private_key:
+    description: 'SSH private key for accessing the remote server'
+    required: true
+    secret: true
+  ssh_host:
+    description: 'Remote server host (IP address or domain)'
+    required: true
+  ssh_user:
+    description: 'Username for SSH login'
+    required: true
+  docker_username:
+    description: 'Username for Docker registry (e.g., GitHub Container Registry)'
+    required: true
+  docker_token:
+    description: 'Access token for Docker registry login'
+    required: true
+    secret: true
+  container_name:
+    description: 'Name of the Docker container'
+    required: true
+    default: 'container'
+  container_port:
+    description: 'Port to run the container on the remote server'
+    required: false
+    default: '8080'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate Image Format
+      run: |
+        IMAGE="${{ github.event.client_payload.target }}"
+        if [[ ! $IMAGE =~ ^[a-zA-Z0-9\.\-]+\/[a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+:[a-zA-Z0-9_\-]+$ ]]; then
+          echo "Error: Invalid Docker image format. The image should be in the format 'registry/owner/repository:tag'."
+          exit 1
+        fi
+        echo "Valid Docker image: $IMAGE"
+  
+    - name: Set up SSH client
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y openssh-client
+
+    - name: Set up SSH agent and add private key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ inputs.ssh_private_key }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H "${{ inputs.ssh_host }}" >> ~/.ssh/known_hosts
+
+    - name: Validate Image Format
+      run: |
+        IMAGE="${{ inputs.target }}"
+        if [[ ! $IMAGE =~ ^ghcr\.io\/[a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+:[a-zA-Z0-9_\-]+$ ]]; then
+          echo "Error: Invalid image format. The image should be in the format 'ghcr.io/owner/repository:tag'."
+          exit 1
+        fi
+        echo "Target image to deploy: $IMAGE"
+
+    - name: Check Docker installation on remote server
+      run: |
+        ssh -t ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} << EOF
+          if ! command -v docker &> /dev/null
+          then
+            echo "Error: Docker is not installed on the remote server."
+            exit 1
+          else
+            echo "Docker is installed."
+          fi
+        EOF
+
+    - name: Log in to Docker registry
+      run: |
+        ssh -t ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} << EOF
+          echo "Logging in to container registry..."
+          echo ${{ inputs.docker_token }} | docker login ghcr.io -u ${{ inputs.docker_username }} --password-stdin
+        EOF
+
+    - name: Pull Docker image
+      run: |
+        ssh -t ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} << EOF
+          echo "Pulling image ${{ inputs.target }}..."
+          docker pull ${{ inputs.target }}
+        EOF
+
+    - name: Stop and remove existing container (if exists)
+      run: |
+        ssh -t ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} << EOF
+          if [ \$(docker ps -q -f name=${{ inputs.container_name }}) ]; then
+            echo "Stopping existing container ${{ inputs.container_name }}..."
+            docker stop ${{ inputs.container_name }}
+          fi
+          if [ \$(docker ps -a -q -f name=${{ inputs.container_name }}) ]; then
+            echo "Removing existing container ${{ inputs.container_name }}..."
+            docker rm ${{ inputs.container_name }}
+          fi
+        EOF
+
+    - name: Run new Docker container
+      run: |
+        ssh -t ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} << EOF
+          echo "Running new container ${{ inputs.container_name }} on port ${{ inputs.container_port }}..."
+          docker run -d -p 80:${{ inputs.container_port }} --name ${{ inputs.container_name }} ${{ inputs.target }}
+        EOF
